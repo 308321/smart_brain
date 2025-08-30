@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (
     QLabel, QFrame, QDesktopWidget, QMenuBar, QScrollArea, QDialog, QMessageBox,
     QTextBrowser
 )
+from show import show3d
 
 
 # 自定义 QLabel，用于显示图片并支持绘图
@@ -241,7 +242,9 @@ class DraggableScrollArea(QScrollArea):
 class EnlargedImageViewer(QDialog):
     def __init__(self, pixmap: QPixmap, parent=None):
         super().__init__(parent)
-        # 恢复标准窗口标志，确保有标题栏、关闭按钮和最大化按钮，移除最小化按钮
+
+        # 标题栏：关闭 + 最大化
+        self.setWindowTitle("指标图")
         self.setWindowFlags(Qt.Window | Qt.WindowCloseButtonHint | Qt.WindowMaximizeButtonHint)
         self.setAttribute(Qt.WA_TranslucentBackground, False)
 
@@ -251,33 +254,34 @@ class EnlargedImageViewer(QDialog):
         main_layout.setContentsMargins(0, 0, 0, 0)
 
         content_frame = QFrame(self)
+        # 黑色半透明背景
         content_frame.setStyleSheet("background-color: rgba(0, 0, 0, 180); border: none;")
         content_layout = QVBoxLayout(content_frame)
         content_layout.setContentsMargins(10, 10, 10, 10)
-
-        # --- 移除自定义红色关闭按钮 ---
-        # close_button = QPushButton("X", content_frame)
-        # close_button.setFixedSize(30, 30)
-        # close_button.setStyleSheet("background-color: red; color: white; border-radius: 15px; font-weight: bold;")
-        # close_button.clicked.connect(self.accept)
 
         self.image_label = QLabel(content_frame)
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setScaledContents(False)
 
-        # top_bar_layout = QHBoxLayout()
-        # top_bar_layout.addStretch()
-        # top_bar_layout.addWidget(close_button)
-        # content_layout.addLayout(top_bar_layout)
-        # --- 移除自定义红色关闭按钮结束 ---
-
         content_layout.addWidget(self.image_label)
         main_layout.addWidget(content_frame)
 
-        self.initial_resize_and_display()
+        # ---- 设置初始大小 & 居中 ----
+        self.setGeometry(100, 100, 900, 700)  # 初始大小
+        self.setMinimumSize(800, 600)
+
+        desktop = QApplication.desktop()
+        screen_rect = desktop.availableGeometry()
+        center_point = screen_rect.center()
+        frame_geometry = self.frameGeometry()
+        frame_geometry.moveCenter(center_point)
+        self.move(frame_geometry.topLeft())
+        # ---------------------------------
 
         self.setWindowModality(Qt.ApplicationModal)
         self.installEventFilter(self)
+
+        self.update_image_display()
 
     def eventFilter(self, obj, event):
         if event.type() == event.KeyPress and event.key() == Qt.Key_Escape:
@@ -285,22 +289,10 @@ class EnlargedImageViewer(QDialog):
             return True
         return super().eventFilter(obj, event)
 
-    def initial_resize_and_display(self):
-        desktop = QApplication.desktop()
-        screen_rect = desktop.screenGeometry()
-
-        self.resize(screen_rect.size())
-        self.move(screen_rect.topLeft())
-
-        QApplication.processEvents()
-        self.update_image_display()
-
     def update_image_display(self):
-        desktop = QApplication.desktop()
-        screen_rect = desktop.screenGeometry()
-
-        target_image_width = int(screen_rect.width() * 0.5)
-        target_image_height = int(screen_rect.height() * 0.5)
+        """按窗口大小缩放图像"""
+        target_image_width = int(self.width() * 0.9)
+        target_image_height = int(self.height() * 0.9)
 
         if target_image_width > 0 and target_image_height > 0:
             scaled_pixmap = self.original_pixmap.scaled(
@@ -312,7 +304,6 @@ class EnlargedImageViewer(QDialog):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.update_image_display()
-
 
 # 得到一个成员是图像文件路径的列表
 def load_image_paths(directory):
@@ -433,7 +424,7 @@ class HelpDialog(QDialog):
 *   **拖动**：非编辑模式下，按住左键拖动图像，光标显示为 **小手**。
 *   **缩放**：工具栏按钮或 `Ctrl + 滚轮`。
 *   **红笔勾画**：编辑模式下，用鼠标左键标注区域，光标显示为 **十字**。
-*   **状态保存**：每张图片的缩放和勾画会自动保存，切换回来时仍保持。
+*   **3D出血模型**：点击右下角的 **“3D”按钮**，显示该病例的三维出血区域。窗口支持鼠标旋转和滑动条精确旋转。
 
 ---
 
@@ -477,10 +468,13 @@ class MainWindow(QWidget):
 
     def initUI(self):
         desktop = QApplication.desktop()
-        screen_rect = desktop.screenGeometry()
+        screen_rect = desktop.availableGeometry()  # 可用区域（不含任务栏）
+
         screen_width = screen_rect.width()
         screen_height = screen_rect.height()
-        self.resize(screen_width, screen_height)
+
+        # 直接用可用区域大小
+        self.setGeometry(screen_rect)
 
         self.tool_bar = QToolBar(self)
         self.init_toolbar()
@@ -498,6 +492,58 @@ class MainWindow(QWidget):
         self.overlay_scroll_area = DraggableScrollArea(self, self.handle_frame)
         self.overlay_label = EditableLabel()
         self.overlay_scroll_area.setWidget(self.overlay_label)
+
+        # —— 放在 initUI() 里，overlay_scroll_area 创建之后 ——
+        # 把信息标签挂到“图片真正显示区域”的 viewport 上
+        self.patient_info_label = QLabel(self.overlay_scroll_area.viewport())
+        self.patient_info_label.setWordWrap(True)
+        self.patient_info_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)  # 不阻挡鼠标操作（画笔/拖拽）
+        self.patient_info_label.setStyleSheet("""
+            QLabel {
+                background-color: transparent;   /* 半透明黑底 */
+                color: #FFFFFF;
+                font-size: 9pt;
+                padding: 8px 12px;
+                border: none;
+            }
+        """)
+        self.patient_info_label.raise_()  # 显示在最上层
+
+        # 初始排版
+        self._layout_patient_info()
+        # 当图片区域尺寸变化时，跟着重排（比如窗口调整/左右面板变化）
+        old_resize = self.overlay_scroll_area.resizeEvent
+
+        def _on_scrollarea_resize(ev):
+            self._layout_patient_info()  # 左上角信息标签跟随
+            self._layout_show3d_button()  # 右下角3D按钮跟随
+            if old_resize:
+                old_resize(ev)
+
+        self.overlay_scroll_area.resizeEvent = _on_scrollarea_resize
+
+        # —— 3D按钮（挂在 viewport 上，保证浮在图像区域里） ——
+        self.show3d_button = QPushButton("3D", self.overlay_scroll_area.viewport())
+        self.show3d_button.setCursor(Qt.PointingHandCursor)
+        self.show3d_button.setToolTip("查看该病例（三维）出血模型")
+        self.show3d_button.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(0, 150, 136, 180);
+                color: white;
+                border-radius: 20px;
+                font-size: 12pt;
+                padding: 6px;
+            }
+            QPushButton:hover {
+                background-color: rgba(0, 150, 136, 230);
+            }
+        """)
+        self.show3d_button.setFixedSize(60, 60)
+        self.show3d_button.raise_()  # 保证覆盖在最上层
+        self.show3d_button.clicked.connect(self.show_current_case_3d)
+
+        # 初始摆放到右下角
+        self._layout_show3d_button()
 
         self.overlay_label.edit_made_signal.connect(self._record_edit)
 
@@ -563,6 +609,50 @@ class MainWindow(QWidget):
         self.predict_paths = load_image_paths(predict_dir)
         mask_dir = r"data/mask"
         self.mask_paths = load_image_paths(mask_dir)
+
+    def show_current_case_3d(self):
+        if self.current_image_path:
+            img_name = os.path.basename(self.current_image_path)
+            show3d(img_name, 800, 600)
+        else:
+            QMessageBox.information(self, "提示", "请先选择一张病例图像！")
+
+    def _layout_patient_info(self):
+        """
+        把左上角信息标签放到 viewport 内合适的位置 & 合适宽度。
+        """
+        vp = self.overlay_scroll_area.viewport()
+        if not vp:
+            return
+
+        # 让宽度相对自适应：占 viewport 宽度的 26%~40% 之间（你可按喜好微调）
+        vw = max(260, min(int(vp.width() * 0.32), 420))
+        self.patient_info_label.setFixedWidth(vw)
+        self.patient_info_label.adjustSize()  # 按内容自适应高度
+
+        margin = 12
+        self.patient_info_label.move(margin, margin)  # 左上角留点边距
+        self.patient_info_label.raise_()
+
+    def _update_patient_info_text(self, patient_id: str):
+        """
+        更新信息标签内容。姓名/性别/生日没有就用 ** 占位；PID 显示病例编号。
+        """
+        self.patient_info_label.setText(
+            f"姓名: **\n性别/年龄: ** / **\n出生日期: **\nPID: {patient_id}"
+        )
+        self._layout_patient_info()
+
+    def _layout_show3d_button(self):
+        """把3D按钮放到 viewport 的右下角，并保持在最上层"""
+        vp = self.overlay_scroll_area.viewport()
+        if not vp or not hasattr(self, "show3d_button"):
+            return
+        margin = 15
+        x = max(margin, vp.width() - self.show3d_button.width() - margin)
+        y = max(margin, vp.height() - self.show3d_button.height() - margin)
+        self.show3d_button.move(x, y)
+        self.show3d_button.raise_()
 
     def init_toolbar(self):
         self.tool_bar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
@@ -735,15 +825,19 @@ class MainWindow(QWidget):
 
         # 保存当前图片的编辑状态和堆栈到缓存
         if self.current_image_path and self.current_image_path in self.image_data_cache:
-            original_px, _, _, _, _ = self.image_data_cache[self.current_image_path] # _current_display_pixmap 总是最新的
+            original_px, _, _, _, _ = self.image_data_cache[self.current_image_path]
             self.image_data_cache[self.current_image_path] = (
-                original_px, self._current_display_pixmap.copy(), self.current_undo_stack.copy(), self.current_redo_stack.copy(),
+                original_px, self._current_display_pixmap.copy(),
+                self.current_undo_stack.copy(), self.current_redo_stack.copy(),
                 self.current_overlay_zoom_factor
             )
 
         self.currentImgIdx = new_idx
         new_image_path = self.image_paths[self.currentImgIdx]
         self.current_image_path = new_image_path
+        filename = os.path.basename(new_image_path)  # 例： "049_15.png"
+        patient_id = filename.split("_")[0]  # "049"
+        self._update_patient_info_text(patient_id)  # 更新左上角信息
 
         # 从缓存加载新图片的编辑状态和堆栈
         if new_image_path in self.image_data_cache:
@@ -770,32 +864,25 @@ class MainWindow(QWidget):
             original_px = QPixmap.fromImage(q_image)
 
             self._current_display_pixmap = original_px.copy()
-            self.current_undo_stack = [self._current_display_pixmap.copy()] # 初始状态
+            self.current_undo_stack = [self._current_display_pixmap.copy()]
             self.current_redo_stack = []
 
-            # 计算初始缩放因子，使其在图片小于视口时能放大到填满视口宽度
             viewport_width = self.overlay_scroll_area.viewport().width()
             viewport_height = self.overlay_scroll_area.viewport().height()
             original_width = self._current_display_pixmap.width()
             original_height = self._current_display_pixmap.height()
 
-            self.current_overlay_zoom_factor = 1.0 # 默认1.0
-
+            self.current_overlay_zoom_factor = 1.0
             if original_width > 0 and original_height > 0 and viewport_width > 0 and viewport_height > 0:
                 scale_w = viewport_width / original_width
                 scale_h = viewport_height / original_height
-
-                # 如果图片比视口小，则放大以填满视口（优先宽度，如果高度超出则按高度适配）
                 if original_width < viewport_width or original_height < viewport_height:
-                    self.current_overlay_zoom_factor = scale_w  # 优先按宽度适配
-                    # 如果宽度适配导致图片高度超出视口，则改为按高度适配
+                    self.current_overlay_zoom_factor = scale_w
                     if (original_height * self.current_overlay_zoom_factor) > viewport_height:
                         self.current_overlay_zoom_factor = scale_h
-                    # 限制最大放大倍数，避免图片过大
-                    if self.current_overlay_zoom_factor > 2.0:  # 例如，最大放大到原始尺寸的2倍
+                    if self.current_overlay_zoom_factor > 2.0:
                         self.current_overlay_zoom_factor = 2.0
                 else:
-                    # 如果图片比视口大，则缩小以适应视口，取较小的缩放因子
                     self.current_overlay_zoom_factor = min(scale_w, scale_h)
 
             self.image_data_cache[new_image_path] = (
@@ -892,12 +979,18 @@ class MainWindow(QWidget):
             QMessageBox.information(self, self.tr("提示"), self.tr("已经是最后一张图片了！"))
 
     def show_enlarged_chart(self, event, label: QLabel):
-        """显示放大的图表对话框。"""
         if event.button() == Qt.LeftButton:
-            pixmap = label.pixmap()
+            # 直接加载保存的高清图文件，而不是 label 的缩略图
+            if label is self.show1_label:
+                pixmap = QPixmap("evaluation_metrics.png")
+            elif label is self.show2_label:
+                pixmap = QPixmap("calcut.png")
+            else:
+                pixmap = label.pixmap()
+
             if pixmap and not pixmap.isNull():
-                viewer = EnlargedImageViewer(pixmap, self)
-                viewer.exec_()
+                self.viewer = EnlargedImageViewer(pixmap)  # 存到 self 避免被回收
+                self.viewer.show()
 
     def show_help_dialog(self):
         """显示帮助文档对话框。"""
@@ -1022,4 +1115,3 @@ if __name__ == "__main__":
     main_widget.setWindowTitle("智慧脑 | 脑出血诊断分析软件")
     main_widget.show()
     sys.exit(app.exec_())
-
